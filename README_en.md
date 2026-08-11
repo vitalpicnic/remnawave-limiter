@@ -63,40 +63,6 @@ image: ghcr.io/syvlech/remnawave-limiter:b422f43
 
 `b422f43` is the 3.0.0 release commit. There is no dedicated `3.0.0` image tag in ghcr: CI only builds semver tags for `v*` refs, while the release is tagged `3.0.0` without the prefix.
 
-## Upgrading to 4.2.0
-
-No data migration is needed — `docker compose pull && docker compose up -d` is enough. But configuration validation is now strict, and the service **refuses to start** when `.env` contains:
-
-- **a typo in a numeric or boolean parameter** (`CHECK_INTERVAL=6O`, `AUTO_NOTIFY_SOFT=yes`). Previously such a value was silently replaced by the default, so the limiter ran with thresholds the administrator never set. Startup now prints every invalid parameter at once;
-- **a negative value** for `TOLERANCE`, `TOLERANCE_MULTIPLIER`, `USER_CACHE_TTL`, `DEFAULT_DEVICE_LIMIT`, `AUTO_DISABLE_DURATION`, `IGNORE_DURATION`;
-- **`REMNAWAVE_API_URL` without a scheme** (`panel.example.com` instead of `https://panel.example.com`) — the address used to be accepted, and every panel request failed at runtime instead;
-- **a non-numeric `WHITELIST_USER_IDS`** — a UUID left over from pre-4.0 versions would never match a user ID and silently did nothing;
-- **an unknown timezone, language, `LOG_LEVEL` or `LOG_FORMAT`**.
-
-The reason is always in the first lines of `docker compose logs limiter`.
-
-Notable behaviour changes:
-
-- **Logging** was reworked for `docker compose logs -f`: one summary line per check cycle (`Проверка  nodes=2/2 took=308ms users=17 violations=1`), a single consistent format, and no duplicate lines from the Telegram library. Adds `LOG_LEVEL` (changeable at runtime via `/settings`) and `LOG_FORMAT=json` for log shippers.
-- **Timer-based restore** no longer loses a user when the panel was unreachable at the moment the timer fired: the ID goes back into the queue, and once attempts are exhausted the admins get a chat notification.
-- **`/healthz`** only counts a check as successful when at least one node was polled.
-- **The "violations in 24h" counter** now actually expires after 24 hours (previously it never reset for a repeat offender and grew without bound).
-- **Panel requests** survive `429` and honour `Retry-After` — a rate limit used to abort the whole check.
-- **Webhooks** retry on transient failures and add an `X-Timestamp` header.
-
-## Upgrading from limiter 3.x to 4.0.0
-
-1. Upgrade the panel to Remnawave 3.0.0+.
-2. Reissue (or edit) the API token in the panel: the `ip-control:*` scope was renamed to `connections:*`. Without this every request returns 403.
-3. Update limiter and restart.
-
-No Redis migration is required: the numeric user ID is written to the same keys as before (`user:<id>`, `cooldown:<id>`, `whitelist`, stats). Exceptions:
-
-- **Restore queue.** `restore:queue` entries written by 3.x contain UUIDs and are skipped with a log warning — those users must be re-enabled manually. To clear the queue up front: `redis-cli DEL restore:queue`.
-- **Buttons in old Telegram messages.** Alerts sent before the upgrade carry a UUID in their callback data; pressing them answers "Button is outdated".
-- **`WHITELIST_USER_IDS`** must contain numeric user IDs (as before); UUIDs in that list will never match.
-- **Webhook.** The `user.uuid` field is gone and `user.user_id` is now a number rather than a string — update your receiver.
-
 ## Installation
 
 ```bash

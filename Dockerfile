@@ -1,7 +1,9 @@
 # syntax=docker/dockerfile:1
 FROM golang:1.26-alpine AS builder
 
-ARG VERSION=dev
+# Пусто по умолчанию: тогда версия берётся из internal/version/version.go.
+# Значение вроде "dev" здесь перетирало бы её при любой сборке без --build-arg.
+ARG VERSION=""
 ARG TARGETOS
 ARG TARGETARCH
 
@@ -15,7 +17,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath \
-        -ldflags="-s -w -X github.com/remnawave/limiter/internal/version.Version=${VERSION}" \
+        -ldflags="-s -w ${VERSION:+-X github.com/remnawave/limiter/internal/version.Version=$VERSION}" \
         -o /bin/remnawave-limiter ./cmd/limiter/
 
 FROM alpine:3.23
