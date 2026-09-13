@@ -1,0 +1,58 @@
+services:
+  remnawave-limiter:
+    image: ghcr.io/YOUR_GITHUB_LOGIN/remnawave-limiter:latest
+    container_name: remnawave-limiter
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    depends_on:
+      redis:
+        condition: service_healthy
+
+    expose:
+      - "8081"
+
+    networks:
+      - limiter-internal
+      - remnawave-network
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  redis:
+    image: valkey/valkey:8.1-alpine
+    container_name: remnawave-limiter-redis
+    restart: unless-stopped
+
+    command:
+      - valkey-server
+      - --appendonly
+      - "yes"
+
+    volumes:
+      - redis-data:/data
+
+    networks:
+      - limiter-internal
+
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  redis-data:
+
+networks:
+  limiter-internal:
+    driver: bridge
+
+  remnawave-network:
+    external: true
+    name: remnawave-network
