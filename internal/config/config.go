@@ -17,15 +17,6 @@ import (
 type Config struct {
 	RemnawaveAPIURL          string
 	RemnawaveAPIToken        string
-	
-	DeviceLimiterEnabled  bool
-	TrafficLimiterEnabled bool
-	TrafficLimitedSquadUUID   string
-	TrafficUnlimitedSquadUUID string
-	TrafficWebhookAddr        string
-	RemnawaveWebhookSecret    string
-	TrafficReconcileInterval  int
-
 	CheckInterval            int
 	ActiveIPWindow           int
 	Tolerance                int
@@ -97,106 +88,32 @@ func LoadConfigWithOverrides(envPath string, overrides map[string]string) (*Conf
 		return nil, fmt.Errorf("REMNAWAVE_API_TOKEN обязательный параметр")
 	}
 
-		deviceLimiterEnabled := l.getEnvBool("DEVICE_LIMITER_ENABLED", true)
-	trafficLimiterEnabled := l.getEnvBool("TRAFFIC_LIMITER_ENABLED", false)
-
-	if !deviceLimiterEnabled && !trafficLimiterEnabled {
-		return nil, fmt.Errorf(
-			"хотя бы один модуль должен быть включён: DEVICE_LIMITER_ENABLED или TRAFFIC_LIMITER_ENABLED",
-		)
-	}
-
 	telegramBotToken := l.lookup("TELEGRAM_BOT_TOKEN")
+	if telegramBotToken == "" {
+		return nil, fmt.Errorf("TELEGRAM_BOT_TOKEN обязательный параметр")
+	}
+
 	telegramChatIDStr := l.lookup("TELEGRAM_CHAT_ID")
+	if telegramChatIDStr == "" {
+		return nil, fmt.Errorf("TELEGRAM_CHAT_ID обязательный параметр")
+	}
+	telegramChatID, err := strconv.ParseInt(telegramChatIDStr, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("TELEGRAM_CHAT_ID должен быть числом: %v", err)
+	}
+
 	telegramAdminIDsStr := l.lookup("TELEGRAM_ADMIN_IDS")
-
-	var telegramChatID int64
-	var telegramAdminIDs []int64
-
-	// Telegram обязателен только для оригинального device/HWID limiter.
-	if deviceLimiterEnabled {
-		if telegramBotToken == "" {
-			return nil, fmt.Errorf(
-				"TELEGRAM_BOT_TOKEN обязательный параметр при DEVICE_LIMITER_ENABLED=true",
-			)
-		}
-
-		if telegramChatIDStr == "" {
-			return nil, fmt.Errorf(
-				"TELEGRAM_CHAT_ID обязательный параметр при DEVICE_LIMITER_ENABLED=true",
-			)
-		}
-
-		if telegramAdminIDsStr == "" {
-			return nil, fmt.Errorf(
-				"TELEGRAM_ADMIN_IDS обязательный параметр при DEVICE_LIMITER_ENABLED=true",
-			)
-		}
+	if telegramAdminIDsStr == "" {
+		return nil, fmt.Errorf("TELEGRAM_ADMIN_IDS обязательный параметр")
 	}
-
-	if telegramChatIDStr != "" {
-		var err error
-		telegramChatID, err = strconv.ParseInt(
-			strings.TrimSpace(telegramChatIDStr),
-			10,
-			64,
-		)
-		if err != nil {
-			return nil, fmt.Errorf(
-				"TELEGRAM_CHAT_ID должен быть числом: %v",
-				err,
-			)
-		}
-	}
-
-	if telegramAdminIDsStr != "" {
-		var err error
-		telegramAdminIDs, err = parseint64list(telegramAdminIDsStr)
-		if err != nil {
-			return nil, fmt.Errorf(
-				"TELEGRAM_ADMIN_IDS: %v",
-				err,
-			)
-		}
-	} else {
-		telegramAdminIDs = []int64{}
+	telegramAdminIDs, err := parseint64list(telegramAdminIDsStr)
+	if err != nil {
+		return nil, fmt.Errorf("TELEGRAM_ADMIN_IDS: %v", err)
 	}
 
 	cfg := &Config{
-		RemnawaveAPIURL:   strings.TrimRight(strings.TrimSpace(remnawaveAPIURL), "/"),
-		RemnawaveAPIToken: remnawaveAPIToken,
-
-		DeviceLimiterEnabled:  deviceLimiterEnabled,
-		TrafficLimiterEnabled: trafficLimiterEnabled,
-
-		TrafficLimitedSquadUUID: strings.TrimSpace(
-			l.getEnv("TRAFFIC_LIMITED_SQUAD_UUID", ""),
-		),
-
-		TrafficUnlimitedSquadUUID: strings.TrimSpace(
-			l.getEnv("TRAFFIC_UNLIMITED_SQUAD_UUID", ""),
-		),
-
-		TrafficWebhookAddr: l.getEnv(
-			"TRAFFIC_WEBHOOK_ADDR",
-			":8081",
-		),
-
-		RemnawaveWebhookSecret: strings.TrimSpace(
-			l.getEnv("REMNAWAVE_WEBHOOK_SECRET", ""),
-		),
-
-		TrafficReconcileInterval: l.getEnvInt(
-			"TRAFFIC_RECONCILE_INTERVAL",
-			60,
-		),
-
-		CheckInterval:       l.getEnvInt("CHECK_INTERVAL", 30),
-		ActiveIPWindow:      l.getEnvInt("ACTIVE_IP_WINDOW", 300),
-		Tolerance:           l.getEnvInt("TOLERANCE", 0),
-		ToleranceMultiplier: l.getEnvFloat64("TOLERANCE_MULTIPLIER", 0),
-
-		// дальше оставляешь существующие поля без изменений
+		RemnawaveAPIURL:          strings.TrimRight(strings.TrimSpace(remnawaveAPIURL), "/"),
+		RemnawaveAPIToken:        remnawaveAPIToken,
 		CheckInterval:            l.getEnvInt("CHECK_INTERVAL", 30),
 		ActiveIPWindow:           l.getEnvInt("ACTIVE_IP_WINDOW", 300),
 		Tolerance:                l.getEnvInt("TOLERANCE", 0),
@@ -250,74 +167,6 @@ func LoadConfigWithOverrides(envPath string, overrides map[string]string) (*Conf
 }
 
 func (cfg *Config) Validate() error {
-	if !cfg.DeviceLimiterEnabled && !cfg.TrafficLimiterEnabled {
-		return fmt.Errorf(
-			"хотя бы один limiter должен быть включён",
-		)
-	}
-
-	if cfg.TrafficLimiterEnabled {
-		if cfg.TrafficLimitedSquadUUID == "" {
-			return fmt.Errorf(
-				"TRAFFIC_LIMITED_SQUAD_UUID обязательный параметр при TRAFFIC_LIMITER_ENABLED=true",
-			)
-		}
-
-		if cfg.TrafficUnlimitedSquadUUID == "" {
-			return fmt.Errorf(
-				"TRAFFIC_UNLIMITED_SQUAD_UUID обязательный параметр при TRAFFIC_LIMITER_ENABLED=true",
-			)
-		}
-
-		if cfg.TrafficLimitedSquadUUID == cfg.TrafficUnlimitedSquadUUID {
-			return fmt.Errorf(
-				"TRAFFIC_LIMITED_SQUAD_UUID и TRAFFIC_UNLIMITED_SQUAD_UUID не должны совпадать",
-			)
-		}
-
-		if cfg.RemnawaveWebhookSecret == "" {
-			return fmt.Errorf(
-				"REMNAWAVE_WEBHOOK_SECRET обязательный параметр при TRAFFIC_LIMITER_ENABLED=true",
-			)
-		}
-
-		if cfg.TrafficReconcileInterval <= 0 {
-			return fmt.Errorf(
-				"TRAFFIC_RECONCILE_INTERVAL должен быть > 0, получено %d",
-				cfg.TrafficReconcileInterval,
-			)
-		}
-
-		if _, _, err := net.SplitHostPort(cfg.TrafficWebhookAddr); err != nil {
-			return fmt.Errorf(
-				"TRAFFIC_WEBHOOK_ADDR: ожидается host:port (например \":8081\"), получено %q: %v",
-				cfg.TrafficWebhookAddr,
-				err,
-			)
-		}
-	}
-
-	if cfg.DeviceLimiterEnabled {
-		if cfg.TelegramBotToken == "" {
-			return fmt.Errorf(
-				"TELEGRAM_BOT_TOKEN обязательный параметр при DEVICE_LIMITER_ENABLED=true",
-			)
-		}
-
-		if cfg.TelegramChatID == 0 {
-			return fmt.Errorf(
-				"TELEGRAM_CHAT_ID обязательный параметр при DEVICE_LIMITER_ENABLED=true",
-			)
-		}
-
-		if len(cfg.TelegramAdminIDs) == 0 {
-			return fmt.Errorf(
-				"TELEGRAM_ADMIN_IDS обязательный параметр при DEVICE_LIMITER_ENABLED=true",
-			)
-		}
-	}
-
-	// существующий Validate дальше
 	if cfg.ActionMode != "manual" && cfg.ActionMode != "auto" {
 		return fmt.Errorf("ACTION_MODE должен быть \"manual\" или \"auto\", получено %q", cfg.ActionMode)
 	}
