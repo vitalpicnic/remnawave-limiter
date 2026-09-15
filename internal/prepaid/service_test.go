@@ -245,6 +245,51 @@ func TestNewLimitBeforeResetIsPreservedAndDoesNotReactivate(t *testing.T) {
 	}
 }
 
+func TestRepeatedExhaustionWithStaleBlockedState(t *testing.T) {
+	for _, event := range []string{"user.limited", "reconcile"} {
+		t.Run(event, func(t *testing.T) {
+			u := api.TrafficUserData{
+				ID: 66, Status: "LIMITED", TrafficLimitBytes: 100, UsedTrafficBytes: 120,
+				TrafficLimitStrategy: "NO_RESET",
+				ActiveInternalSquads: []api.InternalSquad{
+					{UUID: testLimitedSquad}, {UUID: testUnlimitedSquad}, {UUID: testExtraSquad},
+				},
+			}
+			panel := &fakePanel{users: map[int64]api.TrafficUserData{66: u}, limitedUsers: []api.TrafficUserData{u}}
+			store := &fakeStore{states: map[int64]TrafficState{
+				66: {UserID: 66, Phase: PhaseBlocked, ExhaustedLimitBytes: 300, BlockedAt: time.Unix(1, 0)},
+			}}
+			svc := testService(panel, store)
+			var err error
+			if event == "reconcile" {
+				err = svc.Reconcile(context.Background())
+			} else {
+				err = svc.HandleEvent(context.Background(), event, 66)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := panel.users[66]
+			if got.Status != "ACTIVE" || got.TrafficLimitBytes != 0 || hasSquad(got.ActiveInternalSquads, testLimitedSquad) {
+				t.Fatalf("repeated exhausted package was not blocked: %+v", got)
+			}
+			if !hasSquad(got.ActiveInternalSquads, testUnlimitedSquad) || !hasSquad(got.ActiveInternalSquads, testExtraSquad) {
+				t.Errorf("fallback/unrelated squads lost: %+v", got.ActiveInternalSquads)
+			}
+			state := store.states[66]
+			if state.Phase != PhaseBlocked || state.ExhaustedLimitBytes != 100 || !state.BlockedAt.After(time.Unix(1, 0)) {
+				t.Errorf("stale blocked state not replaced: %+v", state)
+			}
+			if err := svc.HandleEvent(context.Background(), "user.limited", 66); err != nil {
+				t.Fatal(err)
+			}
+			if len(panel.updates) != 1 {
+				t.Errorf("duplicate blocking updates: %d", len(panel.updates))
+			}
+		})
+	}
+}
+
 func TestReconcileDiscoversMissedLimitedWebhook(t *testing.T) {
 	user := api.TrafficUserData{
 		ID:                   7,

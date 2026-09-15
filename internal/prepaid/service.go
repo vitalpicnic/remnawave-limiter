@@ -272,6 +272,13 @@ func (s *Service) reconcileBlocked(ctx context.Context, state *TrafficState, use
 	// New prepaid package is recognized only after the old counter was reset:
 	// blocked + non-zero limit + used == 0.
 	if user.TrafficLimitBytes > 0 {
+		// Paid access may have been restored directly in the panel, with the
+		// reset/activation happening between polls or its webhook being lost.
+		// A LIMITED user in the paid squad has exhausted an active package;
+		// the previous blocked state must not suppress blocking that package.
+		if user.Status == "LIMITED" && hasSquad(user.ActiveInternalSquads, s.limitedSquad) {
+			return s.startBlocking(ctx, user)
+		}
 		if user.UsedTrafficBytes == 0 {
 			return s.activateNewPackage(ctx, state, user)
 		}
