@@ -2,7 +2,10 @@ package prepaid
 
 import (
 	"context"
+	"encoding/json"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/remnawave/limiter/internal/api"
@@ -265,6 +268,69 @@ func TestReconcileDiscoversMissedLimitedWebhook(t *testing.T) {
 	}
 	if panel.users[7].TrafficLimitBytes != 0 || panel.users[7].Status != "ACTIVE" {
 		t.Fatalf("reconciler did not finish blocking: %#v", panel.users[7])
+	}
+}
+
+func TestReconcileDiscoversV3LimitedUserThroughAPI(t *testing.T) {
+	panel := &fakePanel{users: map[int64]api.TrafficUserData{
+		66: {
+			ID: 66, Status: "LIMITED", TrafficLimitBytes: 36700160,
+			UsedTrafficBytes: 42362891, TrafficLimitStrategy: "NO_RESET",
+			ActiveInternalSquads: []api.InternalSquad{
+				{UUID: testLimitedSquad}, {UUID: testUnlimitedSquad}, {UUID: testExtraSquad},
+			},
+		},
+	}}
+	wireUser := func() map[string]interface{} {
+		u := panel.users[66]
+		return map[string]interface{}{
+			"id": u.ID, "status": u.Status, "trafficLimitBytes": u.TrafficLimitBytes,
+			"trafficLimitStrategy": u.TrafficLimitStrategy, "activeInternalSquads": u.ActiveInternalSquads,
+			"userTraffic": map[string]interface{}{"usedTrafficBytes": u.UsedTrafficBytes},
+		}
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/users/stream":
+			json.NewEncoder(w).Encode(map[string]interface{}{"response": map[string]interface{}{
+				"users": []interface{}{wireUser()}, "nextCursor": nil, "hasMore": false,
+			}})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/users/66":
+			json.NewEncoder(w).Encode(map[string]interface{}{"response": wireUser()})
+		case r.Method == http.MethodPatch && r.URL.Path == "/api/users":
+			var req api.UpdateTrafficUserRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Error(err)
+				w.WriteHeader(400)
+				return
+			}
+			if err := panel.UpdateTrafficUser(r.Context(), req); err != nil {
+				t.Error(err)
+			}
+			json.NewEncoder(w).Encode(map[string]interface{}{"response": wireUser()})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	store := &fakeStore{states: map[int64]TrafficState{}}
+	logger := logrus.New()
+	logger.SetOutput(io.Discard)
+	svc := NewService(api.NewClient(srv.URL, "test-token"), store, testLimitedSquad, testUnlimitedSquad, logger)
+	if err := svc.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	u := panel.users[66]
+	if u.Status != "ACTIVE" || u.TrafficLimitBytes != 0 {
+		t.Errorf("unexpected user: %+v", u)
+	}
+	if hasSquad(u.ActiveInternalSquads, testLimitedSquad) || !hasSquad(u.ActiveInternalSquads, testUnlimitedSquad) || !hasSquad(u.ActiveInternalSquads, testExtraSquad) {
+		t.Errorf("incorrect squads: %+v", u.ActiveInternalSquads)
+	}
+	if state := store.states[66]; state.Phase != PhaseBlocked || state.ExhaustedLimitBytes != 36700160 {
+		t.Errorf("unexpected state: %+v", state)
 	}
 }
 

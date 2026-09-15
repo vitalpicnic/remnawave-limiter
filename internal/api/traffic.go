@@ -23,6 +23,25 @@ type TrafficUserData struct {
 	ActiveInternalSquads []InternalSquad `json:"activeInternalSquads"`
 }
 
+func (u *TrafficUserData) UnmarshalJSON(data []byte) error {
+	// Keep the service's counter field independent of the panel wire format.
+	type plainUser TrafficUserData
+	var wire struct {
+		plainUser
+		UserTraffic *struct {
+			UsedTrafficBytes float64 `json:"usedTrafficBytes"`
+		} `json:"userTraffic"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	*u = TrafficUserData(wire.plainUser)
+	if wire.UserTraffic != nil {
+		u.UsedTrafficBytes = wire.UserTraffic.UsedTrafficBytes
+	}
+	return nil
+}
+
 type trafficUserResponse struct {
 	Response TrafficUserData `json:"response"`
 }
@@ -32,6 +51,29 @@ type trafficUsersStreamResponse struct {
 		Data       []TrafficUserData `json:"data"`
 		NextCursor *int64            `json:"nextCursor"`
 	} `json:"response"`
+}
+
+func (r *trafficUsersStreamResponse) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		Response struct {
+			Users      []TrafficUserData `json:"users"`
+			Data       []TrafficUserData `json:"data"`
+			NextCursor *int64            `json:"nextCursor"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	users := wire.Response.Users
+	if users == nil {
+		users = wire.Response.Data
+	}
+	if users == nil {
+		return fmt.Errorf("users stream response missing users/data array")
+	}
+	r.Response.Data = users
+	r.Response.NextCursor = wire.Response.NextCursor
+	return nil
 }
 
 type UpdateTrafficUserRequest struct {
