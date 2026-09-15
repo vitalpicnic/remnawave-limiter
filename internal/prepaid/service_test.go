@@ -3,10 +3,12 @@ package prepaid
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/remnawave/limiter/internal/api"
 	"github.com/sirupsen/logrus"
@@ -331,6 +333,91 @@ func TestReconcileDiscoversV3LimitedUserThroughAPI(t *testing.T) {
 	}
 	if state := store.states[66]; state.Phase != PhaseBlocked || state.ExhaustedLimitBytes != 36700160 {
 		t.Errorf("unexpected state: %+v", state)
+	}
+}
+
+type backgroundTestPanel struct {
+	Panel
+	list    func(context.Context) ([]api.TrafficUserData, error)
+	updated chan struct{}
+}
+
+func (p *backgroundTestPanel) ListLimitedTrafficUsers(ctx context.Context) ([]api.TrafficUserData, error) {
+	return p.list(ctx)
+}
+
+func (p *backgroundTestPanel) UpdateTrafficUser(ctx context.Context, req api.UpdateTrafficUserRequest) error {
+	if err := p.Panel.UpdateTrafficUser(ctx, req); err != nil {
+		return err
+	}
+	select {
+	case p.updated <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+func TestRunReconcilerBlocksUserWhoBecomesLimitedAfterStartup(t *testing.T) {
+	t.Run("successful initial scan", func(t *testing.T) { testBackgroundBlocking(t, false) })
+	t.Run("failed initial scan", func(t *testing.T) { testBackgroundBlocking(t, true) })
+}
+
+func testBackgroundBlocking(t *testing.T, initialError bool) {
+	t.Helper()
+	panel := &fakePanel{users: map[int64]api.TrafficUserData{
+		66: {ID: 66, Status: "ACTIVE", TrafficLimitBytes: 100, UsedTrafficBytes: 100,
+			ActiveInternalSquads: []api.InternalSquad{{UUID: testLimitedSquad}, {UUID: testUnlimitedSquad}}},
+	}}
+	initialScan := make(chan struct{})
+	releaseScan := make(chan struct{})
+	observed := &backgroundTestPanel{Panel: panel, updated: make(chan struct{}, 1)}
+	scans := 0
+	observed.list = func(ctx context.Context) ([]api.TrafficUserData, error) {
+		scans++
+		if scans == 1 {
+			close(initialScan)
+			select {
+			case <-releaseScan:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			if initialError {
+				return nil, errors.New("temporary panel failure")
+			}
+			return nil, nil
+		}
+		u := panel.users[66]
+		u.Status = "LIMITED"
+		panel.users[66] = u
+		return []api.TrafficUserData{u}, nil
+	}
+	store := &fakeStore{states: map[int64]TrafficState{}}
+	logger := logrus.New()
+	logger.SetOutput(io.Discard)
+	svc := NewService(observed, store, testLimitedSquad, testUnlimitedSquad, logger)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); svc.RunReconciler(ctx, 10*time.Millisecond) }()
+	defer func() { cancel(); <-done }()
+	select {
+	case <-initialScan:
+	case <-time.After(3 * time.Second):
+		t.Fatal("initial scan did not run")
+	}
+	close(releaseScan)
+	select {
+	case <-observed.updated:
+	case <-time.After(3 * time.Second):
+		t.Fatal("background scan did not block user")
+	}
+	cancel()
+	<-done
+	u := panel.users[66]
+	if u.Status != "ACTIVE" || u.TrafficLimitBytes != 0 || hasSquad(u.ActiveInternalSquads, testLimitedSquad) {
+		t.Errorf("background scan did not finish blocking: %+v", u)
+	}
+	if !hasSquad(u.ActiveInternalSquads, testUnlimitedSquad) || store.states[66].Phase != PhaseBlocked {
+		t.Errorf("fallback access/state not preserved: %+v", u)
 	}
 }
 

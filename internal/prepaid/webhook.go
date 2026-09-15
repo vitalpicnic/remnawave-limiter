@@ -111,6 +111,7 @@ func (s *HTTPServer) handleWebhook(w http.ResponseWriter, r *http.Request) {
 
 	signature := r.Header.Get("X-Remnawave-Signature")
 	if !VerifyWebhookSignature(body, signature, s.secret) {
+		s.logger.Warn("Prepaid webhook отклонён: неверная подпись")
 		http.Error(w, "invalid signature", http.StatusUnauthorized)
 		return
 	}
@@ -137,6 +138,10 @@ func (s *HTTPServer) handleWebhook(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "missing user id", http.StatusBadRequest)
 			return
 		}
+		s.logger.WithFields(logrus.Fields{
+			"event":   payload.Event,
+			"user_id": user.ID,
+		}).Info("Получен prepaid webhook")
 
 		if err := s.service.HandleEvent(r.Context(), payload.Event, user.ID); err != nil {
 			s.logger.WithError(err).WithFields(logrus.Fields{

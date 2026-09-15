@@ -62,6 +62,17 @@ func (s *Service) HandleEvent(ctx context.Context, event string, userID int64) e
 
 func (s *Service) Reconcile(ctx context.Context) error {
 	var firstErr error
+	started := time.Now()
+	limitedCount, trackedCount := -1, -1
+	s.logger.Info("Фоновая проверка prepaid: начало")
+	defer func() {
+		s.logger.WithFields(logrus.Fields{
+			"duration":      time.Since(started).String(),
+			"limited_users": limitedCount,
+			"tracked_users": trackedCount,
+			"success":       firstErr == nil,
+		}).Info("Фоновая проверка prepaid: завершена")
+	}()
 
 	// First, discover users that are currently LIMITED in Remnawave.
 	// This recovers from a lost user.limited webhook.
@@ -70,6 +81,7 @@ func (s *Service) Reconcile(ctx context.Context) error {
 		firstErr = err
 		s.logger.WithError(err).Warn("Не удалось получить список LIMITED пользователей")
 	} else {
+		limitedCount = len(limitedUsers)
 		for i := range limitedUsers {
 			user := limitedUsers[i]
 			unlock := s.lockUser(user.ID)
@@ -92,6 +104,7 @@ func (s *Service) Reconcile(ctx context.Context) error {
 		s.logger.WithError(err).Warn("Не удалось получить список prepaid-состояний из Redis")
 		return firstErr
 	}
+	trackedCount = len(ids)
 
 	for _, userID := range ids {
 		unlock := s.lockUser(userID)
